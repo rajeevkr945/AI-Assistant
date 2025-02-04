@@ -1,0 +1,4 @@
+openai==0.27.8
+vosk
+pyttsx3
+sounddevice
