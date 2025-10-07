@@ -19,12 +19,18 @@ tts_active = threading.Event()
 WAKE_WORD = "hi"
 
 def callback(indata, frames, time, status):
+    """This is called (from a separate thread) for each audio block."""
     if status:
         print(status, file=sys.stderr)
     q.put(bytes(indata))
 
 
 def internet_connection():
+    """Checks for an active internet connection.
+
+    Returns:
+        bool: True if connected, False otherwise.
+    """
     try:
         response = requests.get("https://www.google.com/", timeout=5)
         print("The Internet is connected.")
@@ -34,6 +40,14 @@ def internet_connection():
         return False   
 
 def vosk_listen(args):
+    """Listens for speech using Vosk and returns the recognized text.
+
+    Args:
+        args: Command-line arguments containing device and model information.
+
+    Returns:
+        str: The recognized text.
+    """
     device_info = sd.query_devices(args.device, "input")
     args.samplerate = int(device_info["default_samplerate"])
 
@@ -53,6 +67,11 @@ def vosk_listen(args):
                     return result_text
 
 def handle_recognized_text(text):
+    """Handles the recognized text to either stop the program or listen for a command.
+
+    Args:
+        text (str): The recognized text from Vosk.
+    """
     if "stop" in text.lower():
         stop_flag.set()
         # print("Stopping TTS and resetting...")
@@ -65,6 +84,11 @@ def handle_recognized_text(text):
             respond_to_text(command)
 
 def listen_for_command():
+    """Listens for a command after the wake word is detected.
+
+    Returns:
+        str: The command text, or None if the program is stopped.
+    """
     while not stop_flag.is_set():
         text = vosk_listen(args)
         if text:
@@ -76,6 +100,14 @@ def listen_for_command():
                 return text
             
 def get_ollama_response(prompt):
+    """Gets a response from the Ollama LLM.
+
+    Args:
+        prompt (str): The prompt to send to the Ollama model.
+
+    Returns:
+        str: The response from the Ollama model, or False if there is no internet.
+    """
     if internet_connection():
         ollama_url = "http://localhost:11434/api/generate"
         headers = {"Content-Type": "application/json"}
@@ -99,6 +131,14 @@ def get_ollama_response(prompt):
         return False
 
 def process_ollama_response(response):
+    """Processes the streaming response from the Ollama API.
+
+    Args:
+        response: The response object from the requests.post call.
+
+    Returns:
+        str: The complete response text.
+    """
     response_lines = response.iter_lines()
     full_response = ""
     for line in response_lines:
@@ -108,6 +148,14 @@ def process_ollama_response(response):
     return full_response
 
 def get_openai_response(prompt):
+    """Gets a response from the OpenAI API.
+
+    Args:
+        prompt (str): The prompt to send to the OpenAI model.
+
+    Returns:
+        str: The response from the OpenAI model, or an error message.
+    """
     openai_url = "https://api.openai.com/v1/chat/completions"
     api_key = ""  # Hardcoded OpenAI API key
     headers = {
@@ -133,12 +181,30 @@ def get_openai_response(prompt):
             return f"OpenAI API Request Failed: {str(e)}"
 
 def process_openai_response(response):
+    """Processes the response from the OpenAI API.
+
+    Args:
+        response: The response object from the requests.post call.
+
+    Returns:
+        str: The response text, or an error message.
+    """
     if response.status_code == 200:
         return response.json().get("choices", [{}])[0].get("message", {}).get("content", "No response content.")
     else:
         return f"Error: {response.status_code} - {response.text}"
 
 def measure_total_time(func, *args, **kwargs):
+    """Measures the execution time of a function.
+
+    Args:
+        func: The function to measure.
+        *args: Positional arguments to pass to the function.
+        **kwargs: Keyword arguments to pass to the function.
+
+    Returns:
+        A tuple containing the result of the function and the total time taken.
+    """
     start_time = time.perf_counter()
     result = func(*args, **kwargs)
     end_time = time.perf_counter()
@@ -147,6 +213,11 @@ def measure_total_time(func, *args, **kwargs):
 
 
 def respond_to_text(text):
+    """Responds to the user's text by getting responses from both Ollama and OpenAI.
+
+    Args:
+        text (str): The text to respond to.
+    """
     with ThreadPoolExecutor() as executor:
         ollama_future = executor.submit(get_ollama_response, text)
         openai_future = executor.submit(get_openai_response, text)
@@ -165,6 +236,11 @@ def respond_to_text(text):
         speak(openai_response)
 
 def speak(text):
+    """Speaks the given text using the Dimits TTS engine.
+
+    Args:
+        text (str): The text to be spoken.
+    """
     tts_active.set()  # TTS is active
 
     # Use Dimits for TTS
@@ -174,6 +250,11 @@ def speak(text):
     tts_active.clear()  # TTS is done
 
 def continuous_chat_with_vosk(args):
+    """Runs the main continuous chat loop.
+
+    Args:
+        args: Command-line arguments.
+    """
     print("Say 'stop' to end the chat. Use the wake word 'hello' to activate.")
 
     while not stop_flag.is_set():

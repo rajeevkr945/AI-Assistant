@@ -12,8 +12,12 @@ GUI_PATH = "/home/pi/Downloads/OllamaProject/myenv/GUI.py"
 # GPIO line configuration
 LINE = 27
 
-# Function to check if the main task is running
 def is_task_running():
+    """Checks if the main task is currently running.
+
+    Returns:
+        bool: True if the task is running, False otherwise.
+    """
     try:
         result = subprocess.run(['pgrep', '-f', MAIN_TASK_PATH], stdout=subprocess.PIPE)
         return len(result.stdout) > 0
@@ -21,8 +25,12 @@ def is_task_running():
         print(f"Error checking task status: {e}")
         return False
 
-# Function to start the main task
 def start_task():
+    """Starts the main task and the GUI.
+
+    This function uses subprocess.Popen to start both the main task and the GUI
+    in separate processes, using the Python executable from the virtual environment.
+    """
     try:
         # Call the main task using the venv Python executable
         subprocess.Popen([VENV_PYTHON, MAIN_TASK_PATH])
@@ -31,8 +39,12 @@ def start_task():
     except Exception as e:
         print(f"Error starting main task: {e}")
 
-# Function to stop the main task (if needed)
 def stop_task():
+    """Stops the main task and the GUI.
+
+    This function uses `pkill` to find and terminate the processes for both the
+    main task and the GUI.
+    """
     try:
         subprocess.run(['pkill', '-f', MAIN_TASK_PATH])
         subprocess.run(['pkill', '-f', GUI_PATH])
@@ -41,7 +53,7 @@ def stop_task():
     except Exception as e:
         print(f"Error stopping main task: {e}")
 
-# Setup GPIO for the button
+# Setup GPIO for the button using gpiod
 with gpiod.request_lines(
     "/dev/gpiochip0",
     consumer="control-script",
@@ -52,20 +64,22 @@ with gpiod.request_lines(
     },
 ) as request:
     
-    # Main control loop
+    # Main control loop to monitor the button
     while True:
-        # Check the button state
+        # Check the state of the GPIO button
         if request.get_value(LINE):
             print("Button pressed: Restarting the main task...")
-            # Stop the current task if running
+            # If the task is running, stop it before restarting
             if is_task_running():
                 stop_task()
-                time.sleep(2)
+                time.sleep(2)  # Wait for the process to terminate
 
             # Start the main task
             start_task()
              
         else:
+            # The script is idle when the button is not pressed
             print("idle")
         
-        time.sleep(1)  # Check the button state every second
+        # Check the button state every second
+        time.sleep(1)
