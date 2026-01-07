@@ -4,11 +4,11 @@ import time
 import gpiod
 from gpiod.line import Direction, Value
 
-# Path to the main task
-MAIN_TASK_PATH = "/home/pi/Downloads/OllamaProject/myenv/mainTask.py"
-# Path to the virtual environment's Python executable
-VENV_PYTHON = "/home/pi/Downloads/OllamaProject/myenv/bin/python"
-GUI_PATH = "/home/pi/Downloads/OllamaProject/myenv/GUI.py"
+# Paths inside the Docker container
+MAIN_TASK_PATH = "/app/MainTask.py"
+GUI_PATH = "/app/GUI.py"
+# The python executable is directly available in the container's PATH
+PYTHON_EXEC = "python"
 # GPIO line configuration
 LINE = 27
 
@@ -24,9 +24,9 @@ def is_task_running():
 # Function to start the main task
 def start_task():
     try:
-        # Call the main task using the venv Python executable
-        subprocess.Popen([VENV_PYTHON, MAIN_TASK_PATH])
-        subprocess.Popen([VENV_PYTHON, GUI_PATH])
+        # Call the tasks using the container's Python executable
+        subprocess.Popen([PYTHON_EXEC, MAIN_TASK_PATH])
+        subprocess.Popen([PYTHON_EXEC, GUI_PATH])
         print("Main task started.")
     except Exception as e:
         print(f"Error starting main task: {e}")
