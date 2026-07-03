@@ -1,6 +1,0 @@
-vosk
-sounddevice
-requests
-dimits
-gpiod
-openai
