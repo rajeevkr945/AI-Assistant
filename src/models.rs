@@ -21,6 +21,8 @@ pub struct Project {
     pub path: PathBuf,
     pub status: ProjectStatus,
     pub description: Option<String>,
+    pub links: Vec<String>,
+    pub ssh_endpoint: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

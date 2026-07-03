@@ -19,7 +19,7 @@ You are an expert AI software engineer helping to build `dev-flow`, a high-perfo
 - [x] Dependencies configured in `Cargo.toml`
 - [x] Implement `src/models.rs` data structures
 - [x] Implement `src/app.rs` keyboard loop & state machine
-- [ ] Implement `src/ui.rs` dual-column rendering layout
+- [x] Implement `src/ui.rs` dual-column rendering layout
 - [ ] Create the Bash wrapper functions for environment manipulation
 
 When asked to generate or modify code, ensure it aligns strictly with this split architecture blueprint.
