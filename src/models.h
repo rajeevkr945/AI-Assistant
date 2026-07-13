@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 #define MAX_NAME 64
-#define MAX_PATH 256
+#define MAX_PATH 512
 #define MAX_SSH 128
 #define MAX_LINKS 8
 #define MAX_LINK_LEN 128
@@ -46,5 +46,9 @@ Product *get_product_at(const AppState *state, int flat_index, const Project **o
 
 // Helper to get the total number of products across all projects
 int get_total_product_count(const AppState *state);
+
+// Add a new product to the project at the given index in AppState.
+// Returns 0 on success, -1 if project_index is out of range or the project is full.
+int add_product_to_state(AppState *state, int project_index, const char *name, const char *local_path);
 
 #endif // MODELS_H

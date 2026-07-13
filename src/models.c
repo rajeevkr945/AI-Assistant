@@ -39,9 +39,9 @@ static int initialize_default_template(const char *path) {
     fprintf(f, "selected_index = 0\n\n");
     fprintf(f, "project = subash\n");
     fprintf(f, "  product = core\n");
-    fprintf(f, "    path = /home/rajeevkr945/bashscripts/AI-Assistant\n");
+    fprintf(f, "    path = /home/rajeev/Documents/Aurora\n");
     fprintf(f, "    ssh = git@github.com:rajeevkr945/dev-flow.git\n");
-    fprintf(f, "    link = https://github.com/rajeevkr945/dev-flow\n");
+    fprintf(f, "    link = https://github.com/rajeevkr945/AI-Assistant/tree/TUI_port_to_C\n");
     fclose(f);
     return 0;
 }
@@ -212,4 +212,25 @@ int get_total_product_count(const AppState *state) {
         total += state->projects[i].product_count;
     }
     return total;
+}
+
+int add_product_to_state(AppState *state, int project_index, const char *name, const char *local_path) {
+    if (project_index < 0 || project_index >= state->project_count) {
+        return -1;
+    }
+
+    Project *proj = &state->projects[project_index];
+    if (proj->product_count >= MAX_PRODUCTS) {
+        return -1;
+    }
+
+    Product *prod = &proj->products[proj->product_count];
+    memset(prod, 0, sizeof(Product));
+    strncpy(prod->name, name, MAX_NAME - 1);
+    prod->name[MAX_NAME - 1] = '\0';
+    strncpy(prod->local_path, local_path, MAX_PATH - 1);
+    prod->local_path[MAX_PATH - 1] = '\0';
+    proj->product_count++;
+
+    return 0;
 }
