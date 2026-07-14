@@ -12,4 +12,12 @@ $(TARGET): $(SRCS)
 clean:
 	rm -f $(TARGET)
 
-.PHONY: all clean
+# Install the binary to ~/.local/bin so the shell function in ~/.bashrc can find it.
+# The shell function itself only needs to be added once (already in ~/.bashrc).
+install: $(TARGET)
+	cp $(TARGET) ~/.local/bin/subash-bin
+	chmod +x ~/.local/bin/subash-bin
+	@echo "Installed: ~/.local/bin/subash-bin"
+	@echo "Run 'source ~/.bashrc' or open a new terminal to use 'subash'."
+
+.PHONY: all clean install

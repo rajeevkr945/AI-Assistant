@@ -69,14 +69,31 @@ int load_config(AppState *state) {
 
     char line[1024];
     while (fgets(line, sizeof(line), f)) {
-        // Remove comments
-        char *comment = strchr(line, '#');
-        if (comment) {
-            *comment = '\0';
-        }
-        comment = strchr(line, ';');
-        if (comment) {
-            *comment = '\0';
+        // Strip trailing newline first
+        size_t llen = strlen(line);
+        if (llen > 0 && line[llen - 1] == '\n') line[--llen] = '\0';
+        if (llen > 0 && line[llen - 1] == '\r') line[--llen] = '\0';
+
+        // Only treat # or ; as a comment when they appear BEFORE the '=' sign.
+        // This preserves '#' and ';' characters inside path/ssh/link values.
+        char *equal = strchr(line, '=');
+        if (!equal) {
+            // No '=' — this is either a blank line, a standalone comment, or
+            // a bare keyword line. Strip # and ; anywhere here.
+            char *comment = strchr(line, '#');
+            if (comment) *comment = '\0';
+            comment = strchr(line, ';');
+            if (comment) *comment = '\0';
+        } else {
+            // Has '=' — only strip comments in the KEY part (left of '=').
+            // The VALUE (right of '=') is kept verbatim.
+            char save = *equal;
+            *equal = '\0';          // temporarily hide the value
+            char *comment = strchr(line, '#');
+            if (comment) *comment = '\0';
+            comment = strchr(line, ';');
+            if (comment) *comment = '\0';
+            *equal = save;          // restore
         }
 
         trim(line);
@@ -84,7 +101,8 @@ int load_config(AppState *state) {
             continue;
         }
 
-        char *equal = strchr(line, '=');
+        // Recalculate equal pointer AFTER trim (trim may memmove the buffer)
+        equal = strchr(line, '=');
         if (!equal) {
             continue;
         }

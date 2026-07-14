@@ -16,6 +16,7 @@ typedef struct {
     char name[MAX_NAME];
     char local_path[MAX_PATH];
     char remote_ssh[MAX_SSH];
+    char redmine[MAX_LINK_LEN];   // Redmine project URL / reference
     char links[MAX_LINKS][MAX_LINK_LEN];
     int link_count;
 } Product;
