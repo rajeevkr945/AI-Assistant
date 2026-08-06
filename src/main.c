@@ -38,8 +38,60 @@ static void buf_backspace(char *buf) {
     if (len > 0) buf[len - 1] = '\0';
 }
 
+static char *form_field_buf(FormState *form) {
+    switch (form->active_field) {
+        case FORM_FIELD_PROJECT: return form->new_project;
+        case FORM_FIELD_NAME:    return form->new_name;
+        case FORM_FIELD_PATH:    return form->new_path;
+        case FORM_FIELD_TASKS:   return form->new_tasks;
+        case FORM_FIELD_LINKS:   return form->new_links;
+        case FORM_FIELD_NOTES:   return form->new_notes;
+        default:                 return form->new_name;
+    }
+}
+static size_t form_field_max(FormState *form) {
+    switch (form->active_field) {
+        case FORM_FIELD_PROJECT: return MAX_NAME;
+        case FORM_FIELD_NAME:    return MAX_NAME;
+        case FORM_FIELD_PATH:    return MAX_PATH;
+        case FORM_FIELD_TASKS:   return MAX_TASKS;
+        case FORM_FIELD_LINKS:   return MAX_LINK_LEN;
+        case FORM_FIELD_NOTES:   return MAX_NOTES;
+        default:                 return MAX_NAME;
+    }
+}
+
+static char *edit_field_buf(EditState *edit) {
+    switch (edit->active_field) {
+        case FORM_FIELD_NAME:  return edit->name_buf;
+        case FORM_FIELD_PATH:  return edit->path_buf;
+        case FORM_FIELD_TASKS: return edit->tasks_buf;
+        case FORM_FIELD_LINKS: return edit->links_buf;
+        case FORM_FIELD_NOTES: return edit->notes_buf;
+        default:               return edit->name_buf;
+    }
+}
+static size_t edit_field_max(EditState *edit) {
+    switch (edit->active_field) {
+        case FORM_FIELD_NAME:  return MAX_NAME;
+        case FORM_FIELD_PATH:  return MAX_PATH;
+        case FORM_FIELD_TASKS: return MAX_TASKS;
+        case FORM_FIELD_LINKS: return MAX_LINK_LEN;
+        case FORM_FIELD_NOTES: return MAX_NOTES;
+        default:               return MAX_NAME;
+    }
+}
+
+// Cycle product-form fields
+static FormField next_product_field(FormField f, int dir) {
+    int v = (int)f + dir;
+    if (v < 0) v = FORM_FIELD_PRODUCT_COUNT - 1;
+    if (v >= FORM_FIELD_PRODUCT_COUNT) v = 0;
+    return (FormField)v;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Pane helpers: hide / restore split layout
+// Pane helpers
 // ─────────────────────────────────────────────────────────────────────────────
 static void hide_panes(struct ncplane* left, struct ncplane* right,
                        unsigned int rows) {
@@ -60,27 +112,16 @@ static void restore_panes(struct ncplane* left, struct ncplane* right,
 // ─────────────────────────────────────────────────────────────────────────────
 // Delete helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Remove the product at flat_index from state. Returns 0 on success.
-static int delete_product(AppState *state, int flat_index) {
-    int cur = 0;
-    for (int i = 0; i < state->project_count; i++) {
-        Project *proj = &state->projects[i];
-        for (int j = 0; j < proj->product_count; j++) {
-            if (cur == flat_index) {
-                // shift products left
-                for (int k = j; k < proj->product_count - 1; k++)
-                    proj->products[k] = proj->products[k + 1];
-                proj->product_count--;
-                return 0;
-            }
-            cur++;
-        }
-    }
-    return -1;
+static int delete_product_in_project(AppState *state, int project_index, int product_index) {
+    if (project_index < 0 || project_index >= state->project_count) return -1;
+    Project *proj = &state->projects[project_index];
+    if (product_index < 0 || product_index >= proj->product_count) return -1;
+    for (int k = product_index; k < proj->product_count - 1; k++)
+        proj->products[k] = proj->products[k + 1];
+    proj->product_count--;
+    return 0;
 }
 
-// Remove the project at project_index from state. Returns 0 on success.
 static int delete_project(AppState *state, int project_index) {
     if (project_index < 0 || project_index >= state->project_count) return -1;
     for (int i = project_index; i < state->project_count - 1; i++)
@@ -93,19 +134,12 @@ static int delete_project(AppState *state, int project_index) {
 // main
 // ─────────────────────────────────────────────────────────────────────────────
 int main(int argc, char **argv) {
-    AppState state;
+    static AppState state;
     if (load_config(&state) != 0) {
         fprintf(stderr, "Error: Failed to load ~/.subash.conf\n");
         return 1;
     }
-
-    int total_prods = get_total_product_count(&state);
-    if (total_prods > 0) {
-        if (state.selected_index >= total_prods || state.selected_index < 0)
-            state.selected_index = 0;
-    } else {
-        state.selected_index = 0;
-    }
+    normalize_selection(&state);
 
     // ── Headless / CLI mode ───────────────────────────────────────────────────
     if (argc > 1) {
@@ -160,7 +194,10 @@ int main(int argc, char **argv) {
     unsigned int rows, cols;
     ncplane_dim_yx(stdplane, &rows, &cols);
 
-    unsigned int left_cols  = cols * 28 / 100;
+    // Narrower project list column (~16% instead of 28%)
+    unsigned int left_cols  = cols * 16 / 100;
+    if (left_cols < 14) left_cols = (cols > 14) ? 14 : cols / 4;
+    if (left_cols > 22) left_cols = 22;
     unsigned int right_cols = cols - left_cols;
 
     struct ncplane_options lo = {
@@ -175,14 +212,12 @@ int main(int argc, char **argv) {
     };
     struct ncplane *right_pane = ncplane_create(stdplane, &ro);
 
-    // ── App state ─────────────────────────────────────────────────────────────
     ViewMode view_mode = MODE_INTRO;
-
     AnimState anim = { .frame_tick = 0, .intro_frame = 0 };
 
     FormState form;
     memset(&form, 0, sizeof(FormState));
-    form.active_field = FORM_FIELD_NAME;
+    form.active_field = FORM_FIELD_PROJECT;
 
     ConfirmState confirm;
     memset(&confirm, 0, sizeof(ConfirmState));
@@ -204,7 +239,6 @@ int main(int argc, char **argv) {
     while (!state.should_quit) {
         uint64_t current_ms = now_ms();
 
-        // ── Time-based events ─────────────────────────────────────────────────
         if (view_mode == MODE_INTRO) {
             if (current_ms - last_intro_ms >= INTRO_FRAME_MS) {
                 last_intro_ms = current_ms;
@@ -220,7 +254,6 @@ int main(int argc, char **argv) {
             anim.frame_tick++;
         }
 
-        // ── Render ────────────────────────────────────────────────────────────
         switch (view_mode) {
             case MODE_INTRO:
                 draw_intro(nc, left_pane, right_pane, rows, cols, anim.intro_frame);
@@ -240,15 +273,15 @@ int main(int argc, char **argv) {
         }
         notcurses_render(nc);
 
-        // ── Non-blocking input ────────────────────────────────────────────────
         uint32_t key = notcurses_get_nblock(nc, &ni);
         if (key == (uint32_t)-1) break;
         if (key == 0) { sleep_ms(5); continue; }
 
-        // resize — all modes
         if (key == NCKEY_RESIZE) {
             ncplane_dim_yx(stdplane, &rows, &cols);
-            left_cols  = cols * 28 / 100;
+            left_cols  = cols * 16 / 100;
+            if (left_cols < 14) left_cols = (cols > 14) ? 14 : cols / 4;
+            if (left_cols > 22) left_cols = 22;
             right_cols = cols - left_cols;
             if (view_mode == MODE_LIST) {
                 restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
@@ -259,54 +292,85 @@ int main(int argc, char **argv) {
             continue;
         }
 
-        if (view_mode == MODE_INTRO) continue; // swallow during intro
+        if (view_mode == MODE_INTRO) continue;
 
         // =====================================================================
         // MODE_LIST
         // =====================================================================
         if (view_mode == MODE_LIST) {
-            int total = get_total_product_count(&state);
 
             if (key == 'q' || key == 'Q' || key == NCKEY_ESC) {
                 state.should_quit = true;
 
+            // ── Left / Right: switch project ↔ product focus ─────────────────
+            } else if (key == NCKEY_LEFT || key == 'h' || key == 'H') {
+                state.nav_focus = NAV_FOCUS_PROJECT;
+
+            } else if (key == NCKEY_RIGHT || key == 'l' || key == 'L') {
+                state.nav_focus = NAV_FOCUS_PRODUCT;
+                normalize_selection(&state);
+
             } else if (key == 'j' || key == 'J' || key == NCKEY_DOWN) {
-                if (total > 0)
-                    state.selected_index = (state.selected_index + 1) % total;
+                if (state.nav_focus == NAV_FOCUS_PROJECT) {
+                    if (state.project_count > 0) {
+                        state.selected_project =
+                            (state.selected_project + 1) % state.project_count;
+                        state.selected_product = 0;
+                        normalize_selection(&state);
+                    }
+                } else {
+                    if (state.project_count > 0) {
+                        Project *p = &state.projects[state.selected_project];
+                        if (p->product_count > 0)
+                            state.selected_product =
+                                (state.selected_product + 1) % p->product_count;
+                    }
+                }
 
             } else if (key == 'k' || key == 'K' || key == NCKEY_UP) {
-                if (total > 0)
-                    state.selected_index = state.selected_index > 0
-                                           ? state.selected_index - 1 : total - 1;
+                if (state.nav_focus == NAV_FOCUS_PROJECT) {
+                    if (state.project_count > 0) {
+                        state.selected_project =
+                            state.selected_project > 0
+                                ? state.selected_project - 1
+                                : state.project_count - 1;
+                        state.selected_product = 0;
+                        normalize_selection(&state);
+                    }
+                } else {
+                    if (state.project_count > 0) {
+                        Project *p = &state.projects[state.selected_project];
+                        if (p->product_count > 0)
+                            state.selected_product =
+                                state.selected_product > 0
+                                    ? state.selected_product - 1
+                                    : p->product_count - 1;
+                    }
+                }
 
             } else if (key == '\n' || key == '\r' || key == NCKEY_ENTER) {
-                const Project *sp = NULL;
-                Product *prod = get_product_at(&state, state.selected_index, &sp);
-                if (prod && trigger_bash_action(prod->local_path) == 0) {
+                Product *prod = get_selected_product(&state, NULL);
+                if (prod && prod->local_path[0] &&
+                    trigger_bash_action(prod->local_path) == 0) {
                     save_config(&state);
                     state.should_quit = true;
                 }
 
             // ── Add product ──────────────────────────────────────────────────
             } else if (key == 'a' || key == 'A') {
-                if (state.project_count > 0) {
-                    memset(&form, 0, sizeof(FormState));
-                    form.active_field = FORM_FIELD_NAME;
-                    form.form_mode    = FORM_MODE_ADD_PRODUCT;
-                    const Project *cp = NULL;
-                    get_product_at(&state, state.selected_index, &cp);
-                    form.target_project_index = 0;
-                    if (cp) {
-                        for (int pi = 0; pi < state.project_count; pi++) {
-                            if (&state.projects[pi] == cp) {
-                                form.target_project_index = pi;
-                                break;
-                            }
-                        }
-                    }
-                    hide_panes(left_pane, right_pane, rows);
-                    view_mode = MODE_FORM;
+                memset(&form, 0, sizeof(FormState));
+                form.form_mode    = FORM_MODE_ADD_PRODUCT;
+                form.active_field = FORM_FIELD_PROJECT;
+                form.target_project_index = state.selected_project;
+                // Pre-fill project name from current selection
+                if (state.selected_project >= 0 &&
+                    state.selected_project < state.project_count) {
+                    strncpy(form.new_project,
+                            state.projects[state.selected_project].name,
+                            MAX_NAME - 1);
                 }
+                hide_panes(left_pane, right_pane, rows);
+                view_mode = MODE_FORM;
 
             // ── New project ──────────────────────────────────────────────────
             } else if (key == 'n' || key == 'N') {
@@ -318,46 +382,32 @@ int main(int argc, char **argv) {
 
             // ── Edit selected product ────────────────────────────────────────
             } else if (key == 'e' || key == 'E') {
-                if (total > 0) {
-                    const Project *ep = NULL;
-                    Product *eprod = get_product_at(&state, state.selected_index, &ep);
-                    if (eprod) {
-                        memset(&edit, 0, sizeof(EditState));
-                        edit.target            = EDIT_TARGET_PRODUCT;
-                        edit.product_flat_index = state.selected_index;
-                        edit.active_field      = FORM_FIELD_NAME;
-                        strncpy(edit.name_buf, eprod->name,       MAX_NAME - 1);
-                        strncpy(edit.path_buf, eprod->local_path, MAX_PATH - 1);
-                        // find project index
-                        edit.project_index = 0;
-                        if (ep) {
-                            for (int pi = 0; pi < state.project_count; pi++) {
-                                if (&state.projects[pi] == ep) {
-                                    edit.project_index = pi;
-                                    break;
-                                }
-                            }
-                        }
-                        hide_panes(left_pane, right_pane, rows);
-                        view_mode = MODE_EDIT;
-                    }
+                Product *eprod = get_selected_product(&state, NULL);
+                if (eprod) {
+                    memset(&edit, 0, sizeof(EditState));
+                    edit.target         = EDIT_TARGET_PRODUCT;
+                    edit.project_index  = state.selected_project;
+                    edit.product_index  = state.selected_product;
+                    edit.active_field   = FORM_FIELD_NAME;
+                    strncpy(edit.name_buf,  eprod->name,       MAX_NAME - 1);
+                    strncpy(edit.path_buf,  eprod->local_path, MAX_PATH - 1);
+                    strncpy(edit.tasks_buf, eprod->tasks,      MAX_TASKS - 1);
+                    strncpy(edit.notes_buf, eprod->notes,      MAX_NOTES - 1);
+                    if (eprod->link_count > 0)
+                        strncpy(edit.links_buf, eprod->links[0], MAX_LINK_LEN - 1);
+                    hide_panes(left_pane, right_pane, rows);
+                    view_mode = MODE_EDIT;
                 }
 
-            // ── Edit active project (Shift-E) ────────────────────────────────
+            // ── Edit active project (Shift-P) ────────────────────────────────
             } else if (key == 'P') {
-                // 'P' = edit the project that owns the selected product
-                const Project *ep = NULL;
-                get_product_at(&state, state.selected_index, &ep);
-                if (ep) {
+                if (state.selected_project >= 0 &&
+                    state.selected_project < state.project_count) {
+                    Project *ep = &state.projects[state.selected_project];
                     memset(&edit, 0, sizeof(EditState));
-                    edit.target       = EDIT_TARGET_PROJECT;
-                    edit.active_field = FORM_FIELD_NAME;
-                    for (int pi = 0; pi < state.project_count; pi++) {
-                        if (&state.projects[pi] == ep) {
-                            edit.project_index = pi;
-                            break;
-                        }
-                    }
+                    edit.target        = EDIT_TARGET_PROJECT;
+                    edit.project_index = state.selected_project;
+                    edit.active_field  = FORM_FIELD_NAME;
                     strncpy(edit.name_buf, ep->name, MAX_NAME - 1);
                     hide_panes(left_pane, right_pane, rows);
                     view_mode = MODE_EDIT;
@@ -365,33 +415,26 @@ int main(int argc, char **argv) {
 
             // ── Delete product ───────────────────────────────────────────────
             } else if (key == 'd') {
-                if (total > 0) {
-                    const Project *dp = NULL;
-                    Product *dprod = get_product_at(&state, state.selected_index, &dp);
-                    if (dprod) {
-                        memset(&confirm, 0, sizeof(ConfirmState));
-                        confirm.action            = CONFIRM_DELETE_PRODUCT;
-                        confirm.product_flat_index = state.selected_index;
-                        strncpy(confirm.subject_name, dprod->name, MAX_NAME - 1);
-                        hide_panes(left_pane, right_pane, rows);
-                        view_mode = MODE_CONFIRM;
-                    }
+                Product *dprod = get_selected_product(&state, NULL);
+                if (dprod) {
+                    memset(&confirm, 0, sizeof(ConfirmState));
+                    confirm.action         = CONFIRM_DELETE_PRODUCT;
+                    confirm.project_index  = state.selected_project;
+                    confirm.product_index  = state.selected_product;
+                    strncpy(confirm.subject_name, dprod->name, MAX_NAME - 1);
+                    hide_panes(left_pane, right_pane, rows);
+                    view_mode = MODE_CONFIRM;
                 }
 
             // ── Delete project ───────────────────────────────────────────────
             } else if (key == 'D') {
-                const Project *dp = NULL;
-                get_product_at(&state, state.selected_index, &dp);
-                if (dp) {
+                if (state.selected_project >= 0 &&
+                    state.selected_project < state.project_count) {
+                    Project *dp = &state.projects[state.selected_project];
                     memset(&confirm, 0, sizeof(ConfirmState));
-                    confirm.action = CONFIRM_DELETE_PROJECT;
+                    confirm.action        = CONFIRM_DELETE_PROJECT;
+                    confirm.project_index = state.selected_project;
                     strncpy(confirm.subject_name, dp->name, MAX_NAME - 1);
-                    for (int pi = 0; pi < state.project_count; pi++) {
-                        if (&state.projects[pi] == dp) {
-                            confirm.project_index = pi;
-                            break;
-                        }
-                    }
                     hide_panes(left_pane, right_pane, rows);
                     view_mode = MODE_CONFIRM;
                 }
@@ -403,16 +446,12 @@ int main(int argc, char **argv) {
         } else if (view_mode == MODE_CONFIRM) {
             if (key == 'y' || key == 'Y') {
                 if (confirm.action == CONFIRM_DELETE_PRODUCT) {
-                    delete_product(&state, confirm.product_flat_index);
-                    int new_total = get_total_product_count(&state);
-                    if (state.selected_index >= new_total)
-                        state.selected_index = new_total > 0 ? new_total - 1 : 0;
+                    delete_product_in_project(&state, confirm.project_index,
+                                              confirm.product_index);
                 } else {
                     delete_project(&state, confirm.project_index);
-                    int new_total = get_total_product_count(&state);
-                    if (state.selected_index >= new_total)
-                        state.selected_index = new_total > 0 ? new_total - 1 : 0;
                 }
+                normalize_selection(&state);
                 save_config(&state);
                 restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
                 view_mode = MODE_LIST;
@@ -431,46 +470,69 @@ int main(int argc, char **argv) {
                 view_mode = MODE_LIST;
 
             } else if (key == NCKEY_BACKSPACE || key == 127) {
-                if (edit.active_field == FORM_FIELD_NAME)
-                    buf_backspace(edit.name_buf);
-                else
-                    buf_backspace(edit.path_buf);
+                buf_backspace(edit_field_buf(&edit));
                 edit.error_msg[0] = '\0';
 
-            } else if ((key == NCKEY_TAB || key == NCKEY_DOWN || key == NCKEY_UP)
+            } else if ((key == NCKEY_TAB || key == NCKEY_DOWN)
                        && edit.target == EDIT_TARGET_PRODUCT) {
-                edit.active_field = (edit.active_field == FORM_FIELD_NAME)
-                                    ? FORM_FIELD_PATH : FORM_FIELD_NAME;
+                // cycle: NAME → PATH → TASKS → LINKS → NOTES → NAME
+                static const FormField cycle[] = {
+                    FORM_FIELD_NAME, FORM_FIELD_PATH, FORM_FIELD_TASKS,
+                    FORM_FIELD_LINKS, FORM_FIELD_NOTES
+                };
+                int idx = 0;
+                for (int i = 0; i < 5; i++)
+                    if (cycle[i] == edit.active_field) { idx = i; break; }
+                edit.active_field = cycle[(idx + 1) % 5];
+                edit.error_msg[0] = '\0';
+
+            } else if (key == NCKEY_UP && edit.target == EDIT_TARGET_PRODUCT) {
+                static const FormField cycle[] = {
+                    FORM_FIELD_NAME, FORM_FIELD_PATH, FORM_FIELD_TASKS,
+                    FORM_FIELD_LINKS, FORM_FIELD_NOTES
+                };
+                int idx = 0;
+                for (int i = 0; i < 5; i++)
+                    if (cycle[i] == edit.active_field) { idx = i; break; }
+                edit.active_field = cycle[(idx + 4) % 5];
                 edit.error_msg[0] = '\0';
 
             } else if (key == '\n' || key == '\r' || key == NCKEY_ENTER) {
                 if (edit.target == EDIT_TARGET_PRODUCT) {
-                    if (edit.active_field == FORM_FIELD_NAME && edit.target == EDIT_TARGET_PRODUCT) {
-                        // advance to path field on first Enter
-                        edit.active_field = FORM_FIELD_PATH;
-                        edit.error_msg[0] = '\0';
+                    if (edit.name_buf[0] == '\0') {
+                        snprintf(edit.error_msg, sizeof(edit.error_msg),
+                                 "Name cannot be empty.");
+                        edit.active_field = FORM_FIELD_NAME;
                     } else {
-                        if (edit.name_buf[0] == '\0') {
-                            snprintf(edit.error_msg, sizeof(edit.error_msg), "Name cannot be empty.");
-                            edit.active_field = FORM_FIELD_NAME;
-                        } else {
-                            // apply edits
-                            Product *p = get_product_at(&state, edit.product_flat_index, NULL);
-                            if (p) {
-                                strncpy(p->name,       edit.name_buf, MAX_NAME - 1);
-                                strncpy(p->local_path, edit.path_buf, MAX_PATH - 1);
+                        if (edit.project_index >= 0 &&
+                            edit.project_index < state.project_count) {
+                            Project *proj = &state.projects[edit.project_index];
+                            if (edit.product_index >= 0 &&
+                                edit.product_index < proj->product_count) {
+                                Product *p = &proj->products[edit.product_index];
+                                strncpy(p->name,       edit.name_buf,  MAX_NAME - 1);
+                                strncpy(p->local_path, edit.path_buf,  MAX_PATH - 1);
+                                strncpy(p->tasks,      edit.tasks_buf, MAX_TASKS - 1);
+                                strncpy(p->notes,      edit.notes_buf, MAX_NOTES - 1);
                                 p->name[MAX_NAME - 1]       = '\0';
                                 p->local_path[MAX_PATH - 1] = '\0';
+                                p->tasks[MAX_TASKS - 1]     = '\0';
+                                p->notes[MAX_NOTES - 1]     = '\0';
+                                if (edit.links_buf[0] != '\0') {
+                                    strncpy(p->links[0], edit.links_buf, MAX_LINK_LEN - 1);
+                                    p->links[0][MAX_LINK_LEN - 1] = '\0';
+                                    if (p->link_count < 1) p->link_count = 1;
+                                }
                             }
-                            save_config(&state);
-                            restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
-                            view_mode = MODE_LIST;
                         }
+                        save_config(&state);
+                        restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
+                        view_mode = MODE_LIST;
                     }
                 } else {
-                    // edit project name
                     if (edit.name_buf[0] == '\0') {
-                        snprintf(edit.error_msg, sizeof(edit.error_msg), "Name cannot be empty.");
+                        snprintf(edit.error_msg, sizeof(edit.error_msg),
+                                 "Name cannot be empty.");
                     } else {
                         Project *proj = &state.projects[edit.project_index];
                         strncpy(proj->name, edit.name_buf, MAX_NAME - 1);
@@ -482,10 +544,7 @@ int main(int argc, char **argv) {
                 }
 
             } else {
-                if (edit.active_field == FORM_FIELD_NAME)
-                    buf_append(edit.name_buf, sizeof(edit.name_buf), key);
-                else if (edit.target == EDIT_TARGET_PRODUCT)
-                    buf_append(edit.path_buf, sizeof(edit.path_buf), key);
+                buf_append(edit_field_buf(&edit), edit_field_max(&edit), key);
                 edit.error_msg[0] = '\0';
             }
 
@@ -495,66 +554,93 @@ int main(int argc, char **argv) {
         } else if (view_mode == MODE_FORM) {
             if (key == NCKEY_ESC) {
                 memset(&form, 0, sizeof(FormState));
-                form.active_field = FORM_FIELD_NAME;
+                form.active_field = FORM_FIELD_PROJECT;
                 restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
                 view_mode = MODE_LIST;
 
             } else if (key == NCKEY_BACKSPACE || key == 127) {
-                if (form.active_field == FORM_FIELD_NAME)
+                if (form.form_mode == FORM_MODE_ADD_PROJECT)
                     buf_backspace(form.new_name);
                 else
-                    buf_backspace(form.new_path);
+                    buf_backspace(form_field_buf(&form));
                 form.error_msg[0] = '\0';
 
-            } else if ((key == NCKEY_TAB || key == NCKEY_DOWN || key == NCKEY_UP)
+            } else if ((key == NCKEY_TAB || key == NCKEY_DOWN)
                        && form.form_mode == FORM_MODE_ADD_PRODUCT) {
-                form.active_field = (form.active_field == FORM_FIELD_NAME)
-                                    ? FORM_FIELD_PATH : FORM_FIELD_NAME;
+                form.active_field = next_product_field(form.active_field, +1);
+                form.error_msg[0] = '\0';
+
+            } else if (key == NCKEY_UP && form.form_mode == FORM_MODE_ADD_PRODUCT) {
+                form.active_field = next_product_field(form.active_field, -1);
                 form.error_msg[0] = '\0';
 
             } else if (key == '\n' || key == '\r' || key == NCKEY_ENTER) {
                 if (form.form_mode == FORM_MODE_ADD_PROJECT) {
                     if (form.new_name[0] == '\0') {
-                        snprintf(form.error_msg, sizeof(form.error_msg), "Name cannot be empty.");
+                        snprintf(form.error_msg, sizeof(form.error_msg),
+                                 "Name cannot be empty.");
                     } else if (state.project_count >= MAX_PROJECTS) {
                         snprintf(form.error_msg, sizeof(form.error_msg),
                                  "Too many projects (max %d).", MAX_PROJECTS);
+                    } else if (find_project_by_name(&state, form.new_name) >= 0) {
+                        snprintf(form.error_msg, sizeof(form.error_msg),
+                                 "Project already exists.");
                     } else {
                         Project *np = &state.projects[state.project_count];
                         memset(np, 0, sizeof(Project));
                         strncpy(np->name, form.new_name, MAX_NAME - 1);
                         np->name[MAX_NAME - 1] = '\0';
                         state.project_count++;
+                        state.selected_project = state.project_count - 1;
+                        state.selected_product = 0;
                         save_config(&state);
                         memset(&form, 0, sizeof(FormState));
-                        form.active_field = FORM_FIELD_NAME;
                         restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
                         view_mode = MODE_LIST;
                     }
                 } else {
-                    // add product: advance to path on first Enter
-                    if (form.active_field == FORM_FIELD_NAME) {
-                        if (form.new_name[0] == '\0') {
-                            snprintf(form.error_msg, sizeof(form.error_msg), "Name cannot be empty.");
+                    // add product: advance fields until last, then save
+                    if (form.active_field != FORM_FIELD_NOTES) {
+                        // validate required fields as we leave them
+                        if (form.active_field == FORM_FIELD_PROJECT &&
+                            form.new_project[0] == '\0') {
+                            snprintf(form.error_msg, sizeof(form.error_msg),
+                                     "Project name cannot be empty.");
+                        } else if (form.active_field == FORM_FIELD_NAME &&
+                                   form.new_name[0] == '\0') {
+                            snprintf(form.error_msg, sizeof(form.error_msg),
+                                     "Product name cannot be empty.");
                         } else {
-                            form.active_field = FORM_FIELD_PATH;
+                            form.active_field = next_product_field(form.active_field, +1);
                             form.error_msg[0] = '\0';
                         }
                     } else {
-                        if (form.new_name[0] == '\0') {
-                            snprintf(form.error_msg, sizeof(form.error_msg), "Name cannot be empty.");
+                        // final save
+                        if (form.new_project[0] == '\0') {
+                            snprintf(form.error_msg, sizeof(form.error_msg),
+                                     "Project name cannot be empty.");
+                            form.active_field = FORM_FIELD_PROJECT;
+                        } else if (form.new_name[0] == '\0') {
+                            snprintf(form.error_msg, sizeof(form.error_msg),
+                                     "Product name cannot be empty.");
                             form.active_field = FORM_FIELD_NAME;
-                        } else if (form.new_path[0] == '\0') {
-                            snprintf(form.error_msg, sizeof(form.error_msg), "Path cannot be empty.");
                         } else {
-                            if (add_product_to_state(&state, form.target_project_index,
-                                                     form.new_name, form.new_path) == 0) {
+                            int pidx = ensure_project(&state, form.new_project);
+                            if (pidx < 0) {
+                                snprintf(form.error_msg, sizeof(form.error_msg),
+                                         "Too many projects (max %d).", MAX_PROJECTS);
+                            } else if (add_product_to_state(&state, pidx,
+                                       form.new_name, form.new_path,
+                                       form.new_tasks, form.new_links,
+                                       form.new_notes) == 0) {
+                                state.selected_project = pidx;
+                                state.selected_product =
+                                    state.projects[pidx].product_count - 1;
+                                state.nav_focus = NAV_FOCUS_PRODUCT;
                                 save_config(&state);
-                                state.selected_index = get_total_product_count(&state) - 1;
-                                if (state.selected_index < 0) state.selected_index = 0;
                                 memset(&form, 0, sizeof(FormState));
-                                form.active_field = FORM_FIELD_NAME;
-                                restore_panes(left_pane, right_pane, rows, left_cols, right_cols);
+                                restore_panes(left_pane, right_pane, rows,
+                                              left_cols, right_cols);
                                 view_mode = MODE_LIST;
                             } else {
                                 snprintf(form.error_msg, sizeof(form.error_msg),
@@ -565,10 +651,10 @@ int main(int argc, char **argv) {
                 }
 
             } else {
-                if (form.active_field == FORM_FIELD_NAME)
+                if (form.form_mode == FORM_MODE_ADD_PROJECT)
                     buf_append(form.new_name, sizeof(form.new_name), key);
-                else if (form.form_mode == FORM_MODE_ADD_PRODUCT)
-                    buf_append(form.new_path, sizeof(form.new_path), key);
+                else
+                    buf_append(form_field_buf(&form), form_field_max(&form), key);
                 form.error_msg[0] = '\0';
             }
         }

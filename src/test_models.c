@@ -4,7 +4,7 @@
 #include <assert.h>
 
 int main() {
-    AppState state;
+    static AppState state;
     
     printf("Loading configuration...\n");
     if (load_config(&state) != 0) {
@@ -13,7 +13,7 @@ int main() {
     }
     
     printf("Loaded configuration successfully. Projects found: %d\n", state.project_count);
-    printf("Selected Index: %d\n", state.selected_index);
+    printf("Selected Project: %d, Product: %d\n", state.selected_project, state.selected_product);
     
     for (int i = 0; i < state.project_count; i++) {
         printf("Project %d: %s\n", i + 1, state.projects[i].name);
@@ -44,7 +44,8 @@ int main() {
         new_proj->product_count = 1;
         state.project_count++;
     }
-    state.selected_index = 42;
+    state.selected_project = 1;
+    state.selected_product = 0;
     
     printf("Saving configuration...\n");
     if (save_config(&state) != 0) {
@@ -53,15 +54,15 @@ int main() {
     }
     
     // Reload state and verify
-    AppState reloaded;
+    static AppState reloaded;
     printf("Reloading configuration...\n");
     if (load_config(&reloaded) != 0) {
         printf("Failed to reload configuration.\n");
         return 1;
     }
     
-    printf("Reloaded selected_index: %d (expected 42)\n", reloaded.selected_index);
-    assert(reloaded.selected_index == 42);
+    printf("Reloaded selected_project: %d (expected 1)\n", reloaded.selected_project);
+    assert(reloaded.selected_project == 1);
     
     // Find the TestProject
     int found = 0;

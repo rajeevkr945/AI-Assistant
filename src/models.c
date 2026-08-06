@@ -14,12 +14,10 @@ static void get_config_path(char *path, size_t max_len) {
 
 static void trim(char *str) {
     size_t len = strlen(str);
-    // Trim trailing whitespace
     while (len > 0 && isspace((unsigned char)str[len - 1])) {
         str[len - 1] = '\0';
         len--;
     }
-    // Trim leading whitespace
     size_t start = 0;
     while (str[start] && isspace((unsigned char)str[start])) {
         start++;
@@ -36,20 +34,24 @@ static int initialize_default_template(const char *path) {
     }
     fprintf(f, "# subash configuration file\n");
     fprintf(f, "# Organize your workspace projects and their products here.\n\n");
-    fprintf(f, "selected_index = 0\n\n");
+    fprintf(f, "selected_project = 0\n");
+    fprintf(f, "selected_product = 0\n\n");
     fprintf(f, "project = subash\n");
     fprintf(f, "  product = core\n");
     fprintf(f, "    path = /home/rajeev/Documents/Aurora\n");
     fprintf(f, "    ssh = git@github.com:rajeevkr945/dev-flow.git\n");
     fprintf(f, "    link = https://github.com/rajeevkr945/AI-Assistant/tree/TUI_port_to_C\n");
+    fprintf(f, "    tasks =\n");
+    fprintf(f, "    notes =\n");
     fclose(f);
     return 0;
 }
 
 int load_config(AppState *state) {
-    // Reset state
     memset(state, 0, sizeof(AppState));
-    state->selected_index = 0;
+    state->selected_project = 0;
+    state->selected_product = 0;
+    state->nav_focus = NAV_FOCUS_PRODUCT;
     state->should_quit = false;
 
     char path[512];
@@ -57,7 +59,6 @@ int load_config(AppState *state) {
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        // Initialize with default template if not present
         if (initialize_default_template(path) != 0) {
             return -1;
         }
@@ -67,33 +68,29 @@ int load_config(AppState *state) {
         }
     }
 
-    char line[1024];
+    // Legacy flat selected_index → applied after load if present
+    int legacy_flat = -1;
+
+    char line[2048];
     while (fgets(line, sizeof(line), f)) {
-        // Strip trailing newline first
         size_t llen = strlen(line);
         if (llen > 0 && line[llen - 1] == '\n') line[--llen] = '\0';
         if (llen > 0 && line[llen - 1] == '\r') line[--llen] = '\0';
 
-        // Only treat # or ; as a comment when they appear BEFORE the '=' sign.
-        // This preserves '#' and ';' characters inside path/ssh/link values.
         char *equal = strchr(line, '=');
         if (!equal) {
-            // No '=' — this is either a blank line, a standalone comment, or
-            // a bare keyword line. Strip # and ; anywhere here.
             char *comment = strchr(line, '#');
             if (comment) *comment = '\0';
             comment = strchr(line, ';');
             if (comment) *comment = '\0';
         } else {
-            // Has '=' — only strip comments in the KEY part (left of '=').
-            // The VALUE (right of '=') is kept verbatim.
             char save = *equal;
-            *equal = '\0';          // temporarily hide the value
+            *equal = '\0';
             char *comment = strchr(line, '#');
             if (comment) *comment = '\0';
             comment = strchr(line, ';');
             if (comment) *comment = '\0';
-            *equal = save;          // restore
+            *equal = save;
         }
 
         trim(line);
@@ -101,7 +98,6 @@ int load_config(AppState *state) {
             continue;
         }
 
-        // Recalculate equal pointer AFTER trim (trim may memmove the buffer)
         equal = strchr(line, '=');
         if (!equal) {
             continue;
@@ -114,7 +110,11 @@ int load_config(AppState *state) {
         trim(val);
 
         if (strcmp(key, "selected_index") == 0) {
-            state->selected_index = atoi(val);
+            legacy_flat = atoi(val);
+        } else if (strcmp(key, "selected_project") == 0) {
+            state->selected_project = atoi(val);
+        } else if (strcmp(key, "selected_product") == 0) {
+            state->selected_product = atoi(val);
         } else if (strcmp(key, "project") == 0) {
             if (state->project_count < MAX_PROJECTS) {
                 Project *proj = &state->projects[state->project_count];
@@ -164,10 +164,46 @@ int load_config(AppState *state) {
                     }
                 }
             }
+        } else if (strcmp(key, "tasks") == 0) {
+            if (state->project_count > 0) {
+                Project *proj = &state->projects[state->project_count - 1];
+                if (proj->product_count > 0) {
+                    Product *prod = &proj->products[proj->product_count - 1];
+                    strncpy(prod->tasks, val, MAX_TASKS - 1);
+                    prod->tasks[MAX_TASKS - 1] = '\0';
+                }
+            }
+        } else if (strcmp(key, "notes") == 0) {
+            if (state->project_count > 0) {
+                Project *proj = &state->projects[state->project_count - 1];
+                if (proj->product_count > 0) {
+                    Product *prod = &proj->products[proj->product_count - 1];
+                    strncpy(prod->notes, val, MAX_NOTES - 1);
+                    prod->notes[MAX_NOTES - 1] = '\0';
+                }
+            }
         }
     }
 
     fclose(f);
+
+    // Migrate legacy flat selected_index if present and new keys were default
+    if (legacy_flat >= 0) {
+        int current = 0;
+        for (int i = 0; i < state->project_count; i++) {
+            for (int j = 0; j < state->projects[i].product_count; j++) {
+                if (current == legacy_flat) {
+                    state->selected_project = i;
+                    state->selected_product = j;
+                    goto done_legacy;
+                }
+                current++;
+            }
+        }
+    done_legacy:;
+    }
+
+    normalize_selection(state);
     return 0;
 }
 
@@ -182,7 +218,8 @@ int save_config(const AppState *state) {
 
     fprintf(f, "# subash configuration file\n");
     fprintf(f, "# Generated automatically. Feel free to edit.\n\n");
-    fprintf(f, "selected_index = %d\n\n", state->selected_index);
+    fprintf(f, "selected_project = %d\n", state->selected_project);
+    fprintf(f, "selected_product = %d\n\n", state->selected_product);
 
     for (int i = 0; i < state->project_count; i++) {
         const Project *proj = &state->projects[i];
@@ -198,6 +235,12 @@ int save_config(const AppState *state) {
             }
             for (int k = 0; k < prod->link_count; k++) {
                 fprintf(f, "    link = %s\n", prod->links[k]);
+            }
+            if (prod->tasks[0] != '\0') {
+                fprintf(f, "    tasks = %s\n", prod->tasks);
+            }
+            if (prod->notes[0] != '\0') {
+                fprintf(f, "    notes = %s\n", prod->notes);
             }
         }
         fprintf(f, "\n");
@@ -232,7 +275,77 @@ int get_total_product_count(const AppState *state) {
     return total;
 }
 
-int add_product_to_state(AppState *state, int project_index, const char *name, const char *local_path) {
+Product *get_selected_product(const AppState *state, const Project **out_project) {
+    if (state->selected_project < 0 || state->selected_project >= state->project_count) {
+        if (out_project) *out_project = NULL;
+        return NULL;
+    }
+    const Project *proj = &state->projects[state->selected_project];
+    if (out_project) *out_project = proj;
+    if (state->selected_product < 0 || state->selected_product >= proj->product_count) {
+        return NULL;
+    }
+    return (Product *)&proj->products[state->selected_product];
+}
+
+int get_selected_flat_index(const AppState *state) {
+    if (state->selected_project < 0 || state->selected_project >= state->project_count)
+        return -1;
+    int flat = 0;
+    for (int i = 0; i < state->selected_project; i++)
+        flat += state->projects[i].product_count;
+    const Project *proj = &state->projects[state->selected_project];
+    if (state->selected_product < 0 || state->selected_product >= proj->product_count)
+        return -1;
+    return flat + state->selected_product;
+}
+
+void normalize_selection(AppState *state) {
+    if (state->project_count <= 0) {
+        state->selected_project = 0;
+        state->selected_product = 0;
+        return;
+    }
+    if (state->selected_project < 0)
+        state->selected_project = 0;
+    if (state->selected_project >= state->project_count)
+        state->selected_project = state->project_count - 1;
+
+    Project *proj = &state->projects[state->selected_project];
+    if (proj->product_count <= 0) {
+        state->selected_product = 0;
+        return;
+    }
+    if (state->selected_product < 0)
+        state->selected_product = 0;
+    if (state->selected_product >= proj->product_count)
+        state->selected_product = proj->product_count - 1;
+}
+
+int find_project_by_name(const AppState *state, const char *name) {
+    if (!name || name[0] == '\0') return -1;
+    for (int i = 0; i < state->project_count; i++) {
+        if (strcmp(state->projects[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+int ensure_project(AppState *state, const char *name) {
+    int idx = find_project_by_name(state, name);
+    if (idx >= 0) return idx;
+    if (state->project_count >= MAX_PROJECTS) return -1;
+    Project *np = &state->projects[state->project_count];
+    memset(np, 0, sizeof(Project));
+    strncpy(np->name, name, MAX_NAME - 1);
+    np->name[MAX_NAME - 1] = '\0';
+    state->project_count++;
+    return state->project_count - 1;
+}
+
+int add_product_to_state(AppState *state, int project_index,
+                         const char *name, const char *local_path,
+                         const char *tasks, const char *link, const char *notes) {
     if (project_index < 0 || project_index >= state->project_count) {
         return -1;
     }
@@ -246,8 +359,23 @@ int add_product_to_state(AppState *state, int project_index, const char *name, c
     memset(prod, 0, sizeof(Product));
     strncpy(prod->name, name, MAX_NAME - 1);
     prod->name[MAX_NAME - 1] = '\0';
-    strncpy(prod->local_path, local_path, MAX_PATH - 1);
-    prod->local_path[MAX_PATH - 1] = '\0';
+    if (local_path) {
+        strncpy(prod->local_path, local_path, MAX_PATH - 1);
+        prod->local_path[MAX_PATH - 1] = '\0';
+    }
+    if (tasks) {
+        strncpy(prod->tasks, tasks, MAX_TASKS - 1);
+        prod->tasks[MAX_TASKS - 1] = '\0';
+    }
+    if (notes) {
+        strncpy(prod->notes, notes, MAX_NOTES - 1);
+        prod->notes[MAX_NOTES - 1] = '\0';
+    }
+    if (link && link[0] != '\0') {
+        strncpy(prod->links[0], link, MAX_LINK_LEN - 1);
+        prod->links[0][MAX_LINK_LEN - 1] = '\0';
+        prod->link_count = 1;
+    }
     proj->product_count++;
 
     return 0;
