@@ -6,9 +6,7 @@
 
 static void get_config_path(char *path, size_t max_len) {
     const char *home = getenv("HOME");
-    if (!home) {
-        home = ".";
-    }
+    if (!home) home = ".";
     snprintf(path, max_len, "%s/.subash.conf", home);
 }
 
@@ -19,32 +17,53 @@ static void trim(char *str) {
         len--;
     }
     size_t start = 0;
-    while (str[start] && isspace((unsigned char)str[start])) {
-        start++;
-    }
-    if (start > 0) {
-        memmove(str, str + start, len - start + 1);
-    }
+    while (str[start] && isspace((unsigned char)str[start])) start++;
+    if (start > 0) memmove(str, str + start, len - start + 1);
 }
 
 static int initialize_default_template(const char *path) {
     FILE *f = fopen(path, "w");
-    if (!f) {
-        return -1;
-    }
+    if (!f) return -1;
     fprintf(f, "# subash configuration file\n");
-    fprintf(f, "# Organize your workspace projects and their products here.\n\n");
+    fprintf(f, "# Organize your projects and tasks here.\n\n");
     fprintf(f, "selected_project = 0\n");
     fprintf(f, "selected_product = 0\n\n");
     fprintf(f, "project = subash\n");
+    fprintf(f, "  description = terminal task organizer\n");
+    fprintf(f, "  git_path = %s\n", getenv("PWD") ? getenv("PWD") : ".");
     fprintf(f, "  product = core\n");
-    fprintf(f, "    path = /home/rajeev/Documents/Aurora\n");
-    fprintf(f, "    ssh = git@github.com:rajeevkr945/dev-flow.git\n");
-    fprintf(f, "    link = https://github.com/rajeevkr945/AI-Assistant/tree/TUI_port_to_C\n");
-    fprintf(f, "    tasks =\n");
+    fprintf(f, "    path = %s\n", getenv("PWD") ? getenv("PWD") : ".");
     fprintf(f, "    notes =\n");
     fclose(f);
     return 0;
+}
+
+// Assign a value to the "current" (last-declared) project/product context.
+static void assign_project_field(Project *proj, const char *key, const char *val) {
+    if      (strcmp(key, "description") == 0) { strncpy(proj->description,    val, MAX_DESC-1);     proj->description[MAX_DESC-1] = '\0'; }
+    else if (strcmp(key, "gerrit_url")  == 0) { strncpy(proj->gerrit_url,     val, MAX_LINK_LEN-1); proj->gerrit_url[MAX_LINK_LEN-1] = '\0'; }
+    else if (strcmp(key, "git_path")    == 0) { strncpy(proj->local_git_path, val, MAX_PATH-1);     proj->local_git_path[MAX_PATH-1] = '\0'; }
+    else if (strcmp(key, "redmine_url") == 0) { strncpy(proj->redmine_url,    val, MAX_LINK_LEN-1); proj->redmine_url[MAX_LINK_LEN-1] = '\0'; }
+}
+
+static void assign_product_field(Product *prod, const char *key, const char *val) {
+    if      (strcmp(key, "path")          == 0) { strncpy(prod->local_path,    val, MAX_PATH-1);     prod->local_path[MAX_PATH-1] = '\0'; }
+    else if (strcmp(key, "obsidian")      == 0) { strncpy(prod->obsidian_path, val, MAX_PATH-1);     prod->obsidian_path[MAX_PATH-1] = '\0'; }
+    else if (strcmp(key, "remote_host")   == 0) { strncpy(prod->remote_host,   val, MAX_PATH-1);     prod->remote_host[MAX_PATH-1] = '\0'; }
+    else if (strcmp(key, "remote_user")   == 0) { strncpy(prod->remote_user,   val, MAX_NAME-1);     prod->remote_user[MAX_NAME-1] = '\0'; }
+    else if (strcmp(key, "remote_pass")   == 0) { strncpy(prod->remote_pass,   val, MAX_NAME-1);     prod->remote_pass[MAX_NAME-1] = '\0'; }
+    else if (strcmp(key, "ssh")           == 0) { /* legacy — kept as-is */ }
+    else if (strcmp(key, "redmine")       == 0) { strncpy(prod->redmine,       val, MAX_LINK_LEN-1); prod->redmine[MAX_LINK_LEN-1] = '\0'; }
+    else if (strcmp(key, "gerrit_commit") == 0) { strncpy(prod->gerrit_commit, val, MAX_LINK_LEN-1); prod->gerrit_commit[MAX_LINK_LEN-1] = '\0'; }
+    else if (strcmp(key, "link")          == 0) {
+        if (prod->link_count < MAX_LINKS) {
+            strncpy(prod->links[prod->link_count], val, MAX_LINK_LEN-1);
+            prod->links[prod->link_count][MAX_LINK_LEN-1] = '\0';
+            prod->link_count++;
+        }
+    }
+    else if (strcmp(key, "tasks") == 0) { strncpy(prod->tasks, val, MAX_TASKS-1); prod->tasks[MAX_TASKS-1] = '\0'; }
+    else if (strcmp(key, "notes") == 0) { strncpy(prod->notes, val, MAX_NOTES-1); prod->notes[MAX_NOTES-1] = '\0'; }
 }
 
 int load_config(AppState *state) {
@@ -53,69 +72,52 @@ int load_config(AppState *state) {
     state->selected_product = 0;
     state->nav_focus = NAV_FOCUS_PRODUCT;
     state->should_quit = false;
+    state->git_graph_project_idx = -1;
 
     char path[512];
     get_config_path(path, sizeof(path));
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        if (initialize_default_template(path) != 0) {
-            return -1;
-        }
+        if (initialize_default_template(path) != 0) return -1;
         f = fopen(path, "r");
-        if (!f) {
-            return -1;
-        }
+        if (!f) return -1;
     }
 
-    // Legacy flat selected_index → applied after load if present
     int legacy_flat = -1;
-
     char line[2048];
+
     while (fgets(line, sizeof(line), f)) {
         size_t llen = strlen(line);
         if (llen > 0 && line[llen - 1] == '\n') line[--llen] = '\0';
         if (llen > 0 && line[llen - 1] == '\r') line[--llen] = '\0';
 
+        // strip comments (# / ;) outside of value
         char *equal = strchr(line, '=');
         if (!equal) {
-            char *comment = strchr(line, '#');
-            if (comment) *comment = '\0';
-            comment = strchr(line, ';');
-            if (comment) *comment = '\0';
+            char *c = strchr(line, '#'); if (c) *c = '\0';
+            c = strchr(line, ';');       if (c) *c = '\0';
         } else {
-            char save = *equal;
-            *equal = '\0';
-            char *comment = strchr(line, '#');
-            if (comment) *comment = '\0';
-            comment = strchr(line, ';');
-            if (comment) *comment = '\0';
+            char save = *equal; *equal = '\0';
+            char *c = strchr(line, '#'); if (c) *c = '\0';
+            c = strchr(line, ';');       if (c) *c = '\0';
             *equal = save;
         }
-
         trim(line);
-        if (line[0] == '\0') {
-            continue;
-        }
+        if (line[0] == '\0') continue;
 
         equal = strchr(line, '=');
-        if (!equal) {
-            continue;
-        }
-
+        if (!equal) continue;
         *equal = '\0';
         char *key = line;
         char *val = equal + 1;
-        trim(key);
-        trim(val);
+        trim(key); trim(val);
 
-        if (strcmp(key, "selected_index") == 0) {
-            legacy_flat = atoi(val);
-        } else if (strcmp(key, "selected_project") == 0) {
-            state->selected_project = atoi(val);
-        } else if (strcmp(key, "selected_product") == 0) {
-            state->selected_product = atoi(val);
-        } else if (strcmp(key, "project") == 0) {
+        if (strcmp(key, "selected_index") == 0)   { legacy_flat = atoi(val); continue; }
+        if (strcmp(key, "selected_project") == 0) { state->selected_project = atoi(val); continue; }
+        if (strcmp(key, "selected_product") == 0) { state->selected_product = atoi(val); continue; }
+
+        if (strcmp(key, "project") == 0) {
             if (state->project_count < MAX_PROJECTS) {
                 Project *proj = &state->projects[state->project_count];
                 memset(proj, 0, sizeof(Project));
@@ -123,7 +125,9 @@ int load_config(AppState *state) {
                 proj->name[MAX_NAME - 1] = '\0';
                 state->project_count++;
             }
-        } else if (strcmp(key, "product") == 0) {
+            continue;
+        }
+        if (strcmp(key, "product") == 0 || strcmp(key, "task") == 0) {
             if (state->project_count > 0) {
                 Project *proj = &state->projects[state->project_count - 1];
                 if (proj->product_count < MAX_PRODUCTS) {
@@ -134,60 +138,34 @@ int load_config(AppState *state) {
                     proj->product_count++;
                 }
             }
-        } else if (strcmp(key, "path") == 0) {
-            if (state->project_count > 0) {
-                Project *proj = &state->projects[state->project_count - 1];
-                if (proj->product_count > 0) {
-                    Product *prod = &proj->products[proj->product_count - 1];
-                    strncpy(prod->local_path, val, MAX_PATH - 1);
-                    prod->local_path[MAX_PATH - 1] = '\0';
-                }
+            continue;
+        }
+
+        // Everything else is a field on the current context (product if any exists,
+        // else project). Product-level keys take precedence when a product is open.
+        if (state->project_count == 0) continue;
+
+        Project *proj = &state->projects[state->project_count - 1];
+        if (proj->product_count > 0) {
+            Product *prod = &proj->products[proj->product_count - 1];
+            // If the key is a known project-level key AND no product-specific handler
+            // owns it, apply to the project. Otherwise apply to the product.
+            if (strcmp(key, "description") == 0 ||
+                strcmp(key, "gerrit_url")  == 0 ||
+                strcmp(key, "git_path")    == 0 ||
+                strcmp(key, "redmine_url") == 0) {
+                assign_project_field(proj, key, val);
+            } else {
+                assign_product_field(prod, key, val);
             }
-        } else if (strcmp(key, "ssh") == 0) {
-            if (state->project_count > 0) {
-                Project *proj = &state->projects[state->project_count - 1];
-                if (proj->product_count > 0) {
-                    Product *prod = &proj->products[proj->product_count - 1];
-                    strncpy(prod->remote_ssh, val, MAX_SSH - 1);
-                    prod->remote_ssh[MAX_SSH - 1] = '\0';
-                }
-            }
-        } else if (strcmp(key, "link") == 0) {
-            if (state->project_count > 0) {
-                Project *proj = &state->projects[state->project_count - 1];
-                if (proj->product_count > 0) {
-                    Product *prod = &proj->products[proj->product_count - 1];
-                    if (prod->link_count < MAX_LINKS) {
-                        strncpy(prod->links[prod->link_count], val, MAX_LINK_LEN - 1);
-                        prod->links[prod->link_count][MAX_LINK_LEN - 1] = '\0';
-                        prod->link_count++;
-                    }
-                }
-            }
-        } else if (strcmp(key, "tasks") == 0) {
-            if (state->project_count > 0) {
-                Project *proj = &state->projects[state->project_count - 1];
-                if (proj->product_count > 0) {
-                    Product *prod = &proj->products[proj->product_count - 1];
-                    strncpy(prod->tasks, val, MAX_TASKS - 1);
-                    prod->tasks[MAX_TASKS - 1] = '\0';
-                }
-            }
-        } else if (strcmp(key, "notes") == 0) {
-            if (state->project_count > 0) {
-                Project *proj = &state->projects[state->project_count - 1];
-                if (proj->product_count > 0) {
-                    Product *prod = &proj->products[proj->product_count - 1];
-                    strncpy(prod->notes, val, MAX_NOTES - 1);
-                    prod->notes[MAX_NOTES - 1] = '\0';
-                }
-            }
+        } else {
+            // No product yet — apply project-level keys.
+            assign_project_field(proj, key, val);
         }
     }
 
     fclose(f);
 
-    // Migrate legacy flat selected_index if present and new keys were default
     if (legacy_flat >= 0) {
         int current = 0;
         for (int i = 0; i < state->project_count; i++) {
@@ -200,7 +178,7 @@ int load_config(AppState *state) {
                 current++;
             }
         }
-    done_legacy:;
+        done_legacy:;
     }
 
     normalize_selection(state);
@@ -212,9 +190,7 @@ int save_config(const AppState *state) {
     get_config_path(path, sizeof(path));
 
     FILE *f = fopen(path, "w");
-    if (!f) {
-        return -1;
-    }
+    if (!f) return -1;
 
     fprintf(f, "# subash configuration file\n");
     fprintf(f, "# Generated automatically. Feel free to edit.\n\n");
@@ -224,24 +200,25 @@ int save_config(const AppState *state) {
     for (int i = 0; i < state->project_count; i++) {
         const Project *proj = &state->projects[i];
         fprintf(f, "project = %s\n", proj->name);
+        if (proj->description[0])    fprintf(f, "  description = %s\n", proj->description);
+        if (proj->gerrit_url[0])     fprintf(f, "  gerrit_url = %s\n",  proj->gerrit_url);
+        if (proj->local_git_path[0]) fprintf(f, "  git_path = %s\n",    proj->local_git_path);
+        if (proj->redmine_url[0])    fprintf(f, "  redmine_url = %s\n", proj->redmine_url);
+
         for (int j = 0; j < proj->product_count; j++) {
             const Product *prod = &proj->products[j];
             fprintf(f, "  product = %s\n", prod->name);
-            if (prod->local_path[0] != '\0') {
-                fprintf(f, "    path = %s\n", prod->local_path);
-            }
-            if (prod->remote_ssh[0] != '\0') {
-                fprintf(f, "    ssh = %s\n", prod->remote_ssh);
-            }
-            for (int k = 0; k < prod->link_count; k++) {
+            if (prod->local_path[0])    fprintf(f, "    path = %s\n",          prod->local_path);
+            if (prod->obsidian_path[0]) fprintf(f, "    obsidian = %s\n",      prod->obsidian_path);
+            if (prod->remote_host[0])   fprintf(f, "    remote_host = %s\n",   prod->remote_host);
+            if (prod->remote_user[0])   fprintf(f, "    remote_user = %s\n",   prod->remote_user);
+            if (prod->remote_pass[0])   fprintf(f, "    remote_pass = %s\n",   prod->remote_pass);
+            if (prod->redmine[0])       fprintf(f, "    redmine = %s\n",       prod->redmine);
+            if (prod->gerrit_commit[0]) fprintf(f, "    gerrit_commit = %s\n", prod->gerrit_commit);
+            for (int k = 0; k < prod->link_count; k++)
                 fprintf(f, "    link = %s\n", prod->links[k]);
-            }
-            if (prod->tasks[0] != '\0') {
-                fprintf(f, "    tasks = %s\n", prod->tasks);
-            }
-            if (prod->notes[0] != '\0') {
-                fprintf(f, "    notes = %s\n", prod->notes);
-            }
+            if (prod->tasks[0])         fprintf(f, "    tasks = %s\n", prod->tasks);
+            if (prod->notes[0])         fprintf(f, "    notes = %s\n", prod->notes);
         }
         fprintf(f, "\n");
     }
@@ -256,9 +233,7 @@ Product *get_product_at(const AppState *state, int flat_index, const Project **o
         const Project *proj = &state->projects[i];
         for (int j = 0; j < proj->product_count; j++) {
             if (current == flat_index) {
-                if (out_project) {
-                    *out_project = proj;
-                }
+                if (out_project) *out_project = proj;
                 return (Product *)&proj->products[j];
             }
             current++;
@@ -269,9 +244,8 @@ Product *get_product_at(const AppState *state, int flat_index, const Project **o
 
 int get_total_product_count(const AppState *state) {
     int total = 0;
-    for (int i = 0; i < state->project_count; i++) {
+    for (int i = 0; i < state->project_count; i++)
         total += state->projects[i].product_count;
-    }
     return total;
 }
 
@@ -282,21 +256,16 @@ Product *get_selected_product(const AppState *state, const Project **out_project
     }
     const Project *proj = &state->projects[state->selected_project];
     if (out_project) *out_project = proj;
-    if (state->selected_product < 0 || state->selected_product >= proj->product_count) {
-        return NULL;
-    }
+    if (state->selected_product < 0 || state->selected_product >= proj->product_count) return NULL;
     return (Product *)&proj->products[state->selected_product];
 }
 
 int get_selected_flat_index(const AppState *state) {
-    if (state->selected_project < 0 || state->selected_project >= state->project_count)
-        return -1;
+    if (state->selected_project < 0 || state->selected_project >= state->project_count) return -1;
     int flat = 0;
-    for (int i = 0; i < state->selected_project; i++)
-        flat += state->projects[i].product_count;
+    for (int i = 0; i < state->selected_project; i++) flat += state->projects[i].product_count;
     const Project *proj = &state->projects[state->selected_project];
-    if (state->selected_product < 0 || state->selected_product >= proj->product_count)
-        return -1;
+    if (state->selected_product < 0 || state->selected_product >= proj->product_count) return -1;
     return flat + state->selected_product;
 }
 
@@ -306,28 +275,21 @@ void normalize_selection(AppState *state) {
         state->selected_product = 0;
         return;
     }
-    if (state->selected_project < 0)
-        state->selected_project = 0;
+    if (state->selected_project < 0) state->selected_project = 0;
     if (state->selected_project >= state->project_count)
         state->selected_project = state->project_count - 1;
 
     Project *proj = &state->projects[state->selected_project];
-    if (proj->product_count <= 0) {
-        state->selected_product = 0;
-        return;
-    }
-    if (state->selected_product < 0)
-        state->selected_product = 0;
+    if (proj->product_count <= 0) { state->selected_product = 0; return; }
+    if (state->selected_product < 0) state->selected_product = 0;
     if (state->selected_product >= proj->product_count)
         state->selected_product = proj->product_count - 1;
 }
 
 int find_project_by_name(const AppState *state, const char *name) {
     if (!name || name[0] == '\0') return -1;
-    for (int i = 0; i < state->project_count; i++) {
-        if (strcmp(state->projects[i].name, name) == 0)
-            return i;
-    }
+    for (int i = 0; i < state->project_count; i++)
+        if (strcmp(state->projects[i].name, name) == 0) return i;
     return -1;
 }
 
@@ -345,38 +307,69 @@ int ensure_project(AppState *state, const char *name) {
 
 int add_product_to_state(AppState *state, int project_index,
                          const char *name, const char *local_path,
-                         const char *tasks, const char *link, const char *notes) {
-    if (project_index < 0 || project_index >= state->project_count) {
-        return -1;
-    }
-
+                         const char *tasks, const char *link, const char *notes,
+                         const char *obsidian, const char *remote_host,
+                         const char *remote_user, const char *remote_pass,
+                         const char *redmine, const char *gerrit_commit) {
+    if (project_index < 0 || project_index >= state->project_count) return -1;
     Project *proj = &state->projects[project_index];
-    if (proj->product_count >= MAX_PRODUCTS) {
-        return -1;
-    }
+    if (proj->product_count >= MAX_PRODUCTS) return -1;
 
     Product *prod = &proj->products[proj->product_count];
     memset(prod, 0, sizeof(Product));
-    strncpy(prod->name, name, MAX_NAME - 1);
-    prod->name[MAX_NAME - 1] = '\0';
-    if (local_path) {
-        strncpy(prod->local_path, local_path, MAX_PATH - 1);
-        prod->local_path[MAX_PATH - 1] = '\0';
-    }
-    if (tasks) {
-        strncpy(prod->tasks, tasks, MAX_TASKS - 1);
-        prod->tasks[MAX_TASKS - 1] = '\0';
-    }
-    if (notes) {
-        strncpy(prod->notes, notes, MAX_NOTES - 1);
-        prod->notes[MAX_NOTES - 1] = '\0';
-    }
-    if (link && link[0] != '\0') {
+
+#define COPY(dst, src, sz) do { if ((src) && (src)[0]) { strncpy((dst), (src), (sz)-1); (dst)[(sz)-1]='\0'; } } while(0)
+    COPY(prod->name,          name,          MAX_NAME);
+    COPY(prod->local_path,    local_path,    MAX_PATH);
+    COPY(prod->tasks,         tasks,         MAX_TASKS);
+    COPY(prod->notes,         notes,         MAX_NOTES);
+    COPY(prod->obsidian_path, obsidian,      MAX_PATH);
+    COPY(prod->remote_host,   remote_host,   MAX_PATH);
+    COPY(prod->remote_user,   remote_user,   MAX_NAME);
+    COPY(prod->remote_pass,   remote_pass,   MAX_NAME);
+    COPY(prod->redmine,       redmine,       MAX_LINK_LEN);
+    COPY(prod->gerrit_commit, gerrit_commit, MAX_LINK_LEN);
+#undef COPY
+
+    if (link && link[0]) {
         strncpy(prod->links[0], link, MAX_LINK_LEN - 1);
         prod->links[0][MAX_LINK_LEN - 1] = '\0';
         prod->link_count = 1;
     }
     proj->product_count++;
-
     return 0;
+}
+
+// ── Utility helpers ─────────────────────────────────────────────────────────
+void expand_home(const char *src, char *dest, size_t dest_sz) {
+    if (!src || !dest || dest_sz == 0) return;
+    if (src[0] == '~' && (src[1] == '/' || src[1] == '\0')) {
+        const char *home = getenv("HOME");
+        if (!home) home = "";
+        snprintf(dest, dest_sz, "%s%s", home, src + 1);
+        return;
+    }
+    if (strncmp(src, "$HOME", 5) == 0) {
+        const char *home = getenv("HOME");
+        if (!home) home = "";
+        snprintf(dest, dest_sz, "%s%s", home, src + 5);
+        return;
+    }
+    strncpy(dest, src, dest_sz - 1);
+    dest[dest_sz - 1] = '\0';
+}
+
+bool fuzzy_match(const char *needle, const char *haystack) {
+    if (!needle || !haystack) return false;
+    if (needle[0] == '\0') return true;
+    // Case-insensitive subsequence match.
+    const unsigned char *n = (const unsigned char*)needle;
+    const unsigned char *h = (const unsigned char*)haystack;
+    while (*n && *h) {
+        int nc = tolower(*n);
+        int hc = tolower(*h);
+        if (nc == hc) n++;
+        h++;
+    }
+    return *n == '\0';
 }
