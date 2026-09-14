@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c11 -O2
+CFLAGS = -Wall -Wextra -std=c11 -O2 -D_GNU_SOURCE -Wno-stringop-truncation
 LDFLAGS = -lnotcurses -lnotcurses-core
 TARGET = subash-bin
 SRCS = src/main.c src/models.c src/ipc.c src/ui.c

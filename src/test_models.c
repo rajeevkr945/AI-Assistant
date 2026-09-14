@@ -21,7 +21,7 @@ int main() {
             Product *p = &state.projects[i].products[j];
             printf("  Product %d: %s\n", j + 1, p->name);
             printf("    Path: %s\n", p->local_path);
-            printf("    SSH: %s\n", p->remote_ssh);
+            printf("    Remote host: %s\n", p->remote_host);
             for (int k = 0; k < p->link_count; k++) {
                 printf("    Link: %s\n", p->links[k]);
             }
@@ -38,7 +38,7 @@ int main() {
         Product *new_prod = &new_proj->products[0];
         strcpy(new_prod->name, "TestProduct");
         strcpy(new_prod->local_path, "/tmp/test-path");
-        strcpy(new_prod->remote_ssh, "git@github.com:test/test.git");
+        strcpy(new_prod->remote_host, "git@github.com:test/test.git");
         strcpy(new_prod->links[0], "https://github.com/test/test");
         new_prod->link_count = 1;
         new_proj->product_count = 1;
