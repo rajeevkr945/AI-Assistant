@@ -40,10 +40,11 @@ static int initialize_default_template(const char *path) {
 
 // Assign a value to the "current" (last-declared) project/product context.
 static void assign_project_field(Project *proj, const char *key, const char *val) {
-    if      (strcmp(key, "description") == 0) { strncpy(proj->description,    val, MAX_DESC-1);     proj->description[MAX_DESC-1] = '\0'; }
-    else if (strcmp(key, "gerrit_url")  == 0) { strncpy(proj->gerrit_url,     val, MAX_LINK_LEN-1); proj->gerrit_url[MAX_LINK_LEN-1] = '\0'; }
-    else if (strcmp(key, "git_path")    == 0) { strncpy(proj->local_git_path, val, MAX_PATH-1);     proj->local_git_path[MAX_PATH-1] = '\0'; }
-    else if (strcmp(key, "redmine_url") == 0) { strncpy(proj->redmine_url,    val, MAX_LINK_LEN-1); proj->redmine_url[MAX_LINK_LEN-1] = '\0'; }
+    if      (strcmp(key, "description")    == 0) { strncpy(proj->description,    val, MAX_DESC-1);     proj->description[MAX_DESC-1] = '\0'; }
+    else if (strcmp(key, "gerrit_url")     == 0) { strncpy(proj->gerrit_url,     val, MAX_LINK_LEN-1); proj->gerrit_url[MAX_LINK_LEN-1] = '\0'; }
+    else if (strcmp(key, "git_path")       == 0) { strncpy(proj->local_git_path, val, MAX_PATH-1);     proj->local_git_path[MAX_PATH-1] = '\0'; }
+    else if (strcmp(key, "redmine_url")    == 0) { strncpy(proj->redmine_url,    val, MAX_LINK_LEN-1); proj->redmine_url[MAX_LINK_LEN-1] = '\0'; }
+    else if (strcmp(key, "obsidian_sync")  == 0) { strncpy(proj->obsidian_sync,  val, MAX_PATH-1);     proj->obsidian_sync[MAX_PATH-1] = '\0'; }
 }
 
 static void assign_product_field(Product *prod, const char *key, const char *val) {
@@ -204,6 +205,7 @@ int save_config(const AppState *state) {
         if (proj->gerrit_url[0])     fprintf(f, "  gerrit_url = %s\n",  proj->gerrit_url);
         if (proj->local_git_path[0]) fprintf(f, "  git_path = %s\n",    proj->local_git_path);
         if (proj->redmine_url[0])    fprintf(f, "  redmine_url = %s\n", proj->redmine_url);
+        if (proj->obsidian_sync[0])  fprintf(f, "  obsidian_sync = %s\n", proj->obsidian_sync);
 
         for (int j = 0; j < proj->product_count; j++) {
             const Product *prod = &proj->products[j];
@@ -372,4 +374,92 @@ bool fuzzy_match(const char *needle, const char *haystack) {
         h++;
     }
     return *n == '\0';
+}
+
+// ── Obsidian vault folder sync ───────────────────────────────────────────────
+#include <dirent.h>
+#include <sys/stat.h>
+
+// Returns 1 if any existing product in the project already has obsidian_path
+// equal to `obs_path` (exact match after expansion).
+static int product_has_obsidian(const Project *proj, const char *obs_path) {
+    for (int i = 0; i < proj->product_count; i++) {
+        char expanded[MAX_PATH];
+        expand_home(proj->products[i].obsidian_path, expanded, sizeof(expanded));
+        if (strcmp(expanded, obs_path) == 0) return 1;
+        // Also compare raw stored value
+        if (strcmp(proj->products[i].obsidian_path, obs_path) == 0) return 1;
+    }
+    return 0;
+}
+
+int sync_obsidian_folder(AppState *state, int project_index) {
+    if (project_index < 0 || project_index >= state->project_count) return 0;
+    Project *proj = &state->projects[project_index];
+    if (proj->obsidian_sync[0] == '\0') return 0;
+
+    // Expand path
+    char vault_path[MAX_PATH];
+    expand_home(proj->obsidian_sync, vault_path, sizeof(vault_path));
+
+    DIR *dir = opendir(vault_path);
+    if (!dir) return 0;
+
+    int added = 0;
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL) {
+        // Skip hidden files/dirs and . / ..
+        if (entry->d_name[0] == '.') continue;
+
+        char full_path[MAX_PATH];
+        snprintf(full_path, sizeof(full_path), "%s/%s", vault_path, entry->d_name);
+
+        struct stat st;
+        if (stat(full_path, &st) != 0) continue;
+
+        // Only sync sub-directories (vault sections) and top-level .md files
+        int is_dir = S_ISDIR(st.st_mode);
+        int is_md  = !is_dir &&
+                     S_ISREG(st.st_mode) &&
+                     strlen(entry->d_name) > 3 &&
+                     strcmp(entry->d_name + strlen(entry->d_name) - 3, ".md") == 0;
+
+        if (!is_dir && !is_md) continue;
+        if (proj->product_count >= MAX_PRODUCTS) break;
+
+        // Skip if already tracked
+        if (product_has_obsidian(proj, full_path)) continue;
+
+        // Derive a clean task name: strip .md suffix for files
+        char task_name[MAX_NAME];
+        strncpy(task_name, entry->d_name, MAX_NAME - 1);
+        task_name[MAX_NAME - 1] = '\0';
+        if (is_md && strlen(task_name) > 3)
+            task_name[strlen(task_name) - 3] = '\0'; // strip ".md"
+
+        // Add new product: obsidian path set, local_path left empty
+        Product *prod = &proj->products[proj->product_count];
+        memset(prod, 0, sizeof(Product));
+        strncpy(prod->name,          task_name,  MAX_NAME - 1);
+        strncpy(prod->obsidian_path, full_path,  MAX_PATH - 1);
+        prod->name[MAX_NAME - 1]          = '\0';
+        prod->obsidian_path[MAX_PATH - 1] = '\0';
+        proj->product_count++;
+        added++;
+    }
+
+    closedir(dir);
+
+    if (added > 0)
+        save_config(state);
+
+    return added;
+}
+
+int sync_all_obsidian(AppState *state) {
+    int total = 0;
+    for (int i = 0; i < state->project_count; i++)
+        total += sync_obsidian_folder(state, i);
+    return total;
 }

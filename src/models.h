@@ -38,6 +38,7 @@ typedef struct {
     char gerrit_url[MAX_LINK_LEN];
     char local_git_path[MAX_PATH];
     char redmine_url[MAX_LINK_LEN];
+    char obsidian_sync[MAX_PATH];   // vault folder to auto-sync tasks from
     Product products[MAX_PRODUCTS];
     int product_count;
 } Project;
@@ -89,5 +90,15 @@ void expand_home(const char *src, char *dest, size_t dest_sz);
 
 // Best-effort case-insensitive substring/subsequence match for the filter.
 bool fuzzy_match(const char *needle, const char *haystack);
+
+// Scan a project's obsidian_sync folder; add a task for every sub-directory
+// (or .md file at the top level) that doesn't already have a matching
+// obsidian_path entry. Returns the number of new tasks added.
+// Writes the conf immediately if any tasks were added.
+int sync_obsidian_folder(AppState *state, int project_index);
+
+// Convenience: call sync_obsidian_folder for every project that has a
+// non-empty obsidian_sync path. Returns total tasks added across all projects.
+int sync_all_obsidian(AppState *state);
 
 #endif // MODELS_H

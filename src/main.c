@@ -207,6 +207,9 @@ int main(int argc, char **argv) {
     }
     normalize_selection(&state);
 
+    // Silently sync Obsidian vault folders for all projects on startup
+    sync_all_obsidian(&state);
+
     // ── Headless / CLI mode ───────────────────────────────────────────────────
     if (argc > 1) {
         const char *found_path = NULL, *found_name = NULL;
@@ -317,6 +320,10 @@ int main(int argc, char **argv) {
     FilterState filter; memset(&filter, 0, sizeof(FilterState));
     HitMap hit; memset(&hit, 0, sizeof(HitMap));
 
+    // Toast notification state (shown after R key sync)
+    char  toast_msg[128] = {0};
+    uint64_t toast_until_ms = 0;  // hide after this monotonic time
+
     // Expand left_pane to full screen for intro
     ncplane_resize_simple(left_pane, rows, cols);
     ncplane_move_yx(left_pane, 0, 0);
@@ -380,6 +387,26 @@ int main(int argc, char **argv) {
                 draw_filter_overlay(nc, stdplane, &filter);
                 break;
         }
+
+        // ── Toast notification (drawn on stdplane, expires after timeout) ─────
+        if (toast_msg[0] && now_ms() < toast_until_ms) {
+            unsigned int t_rows, t_cols;
+            ncplane_dim_yx(stdplane, &t_rows, &t_cols);
+            int msg_len = (int)strlen(toast_msg);
+            int tx = ((int)t_cols - msg_len) / 2;
+            if (tx < 1) tx = 1;
+            int ty = (int)t_rows - 3;
+            // Background pill
+            ncplane_set_bg_rgb(stdplane, 0x1E1E2E);
+            ncplane_set_fg_rgb(stdplane, 0x00E478);
+            ncplane_on_styles(stdplane, NCSTYLE_BOLD);
+            ncplane_putstr_yx(stdplane, ty, tx, toast_msg);
+            ncplane_off_styles(stdplane, NCSTYLE_BOLD);
+            ncplane_set_bg_rgb(stdplane, 0x121221);
+        } else if (toast_msg[0] && now_ms() >= toast_until_ms) {
+            toast_msg[0] = '\0'; // clear expired toast
+        }
+
         notcurses_render(nc);
 
         uint32_t key = notcurses_get_nblock(nc, &ni);
@@ -643,6 +670,20 @@ int main(int argc, char **argv) {
             } else if (key == '/') {
                 memset(&filter, 0, sizeof(FilterState));
                 view_mode = MODE_FILTER;
+
+            // Obsidian sync refresh
+            } else if (key == 'R') {
+                int synced = sync_all_obsidian(&state);
+                normalize_selection(&state);
+                if (synced > 0) {
+                    snprintf(toast_msg, sizeof(toast_msg),
+                             " ✦ Obsidian sync: %d new task%s added ",
+                             synced, synced == 1 ? "" : "s");
+                } else {
+                    snprintf(toast_msg, sizeof(toast_msg),
+                             " ✦ Obsidian sync: up to date ");
+                }
+                toast_until_ms = now_ms() + 3000; // show for 3 seconds
             }
 
         // ============= MODE_FILTER =============
