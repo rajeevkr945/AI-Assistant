@@ -418,32 +418,24 @@ int sync_obsidian_folder(AppState *state, int project_index) {
         struct stat st;
         if (stat(full_path, &st) != 0) continue;
 
-        // Only sync sub-directories (vault sections) and top-level .md files
-        int is_dir = S_ISDIR(st.st_mode);
-        int is_md  = !is_dir &&
-                     S_ISREG(st.st_mode) &&
-                     strlen(entry->d_name) > 3 &&
-                     strcmp(entry->d_name + strlen(entry->d_name) - 3, ".md") == 0;
-
-        if (!is_dir && !is_md) continue;
+        // Only sync sub-directories — each vault folder is a task workspace.
+        // .md files are not synced: they have no directory to cd into and are
+        // already handled by the obsidian_path / 'o' key on the parent task.
+        if (!S_ISDIR(st.st_mode)) continue;
         if (proj->product_count >= MAX_PRODUCTS) break;
 
         // Skip if already tracked
         if (product_has_obsidian(proj, full_path)) continue;
 
-        // Derive a clean task name: strip .md suffix for files
-        char task_name[MAX_NAME];
-        strncpy(task_name, entry->d_name, MAX_NAME - 1);
-        task_name[MAX_NAME - 1] = '\0';
-        if (is_md && strlen(task_name) > 3)
-            task_name[strlen(task_name) - 3] = '\0'; // strip ".md"
-
-        // Add new product: obsidian path set, local_path left empty
+        // Add new product: both local_path and obsidian_path point to the
+        // directory so Enter (cd) and 'o' (open in Obsidian) both work.
         Product *prod = &proj->products[proj->product_count];
         memset(prod, 0, sizeof(Product));
-        strncpy(prod->name,          task_name,  MAX_NAME - 1);
-        strncpy(prod->obsidian_path, full_path,  MAX_PATH - 1);
+        strncpy(prod->name,          entry->d_name, MAX_NAME - 1);
+        strncpy(prod->local_path,    full_path,     MAX_PATH - 1);
+        strncpy(prod->obsidian_path, full_path,     MAX_PATH - 1);
         prod->name[MAX_NAME - 1]          = '\0';
+        prod->local_path[MAX_PATH - 1]    = '\0';
         prod->obsidian_path[MAX_PATH - 1] = '\0';
         proj->product_count++;
         added++;
